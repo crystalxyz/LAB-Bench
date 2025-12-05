@@ -12,10 +12,10 @@ from PIL.Image import Image
 from labbench.utils import ALPHABET, AgentInput
 
 MCQ_INSTRUCT_TEMPLATE = """The following is a multiple choice question about biology.
-Please answer by responding with the letter of the correct answer and don't explain the steps at all.
+Please answer by responding with the letter of the correct answer.
 Wrap your answer with the following tags: [ANSWER]<letter>[/ANSWER].{cot}
 
-Question: {question}
+Refer to the encoded image to answer the question: {question}
 
 Options:
 {answers}
