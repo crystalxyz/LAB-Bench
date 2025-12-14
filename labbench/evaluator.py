@@ -54,7 +54,7 @@ class Evaluator:
             **eval_set_kwargs,
         )
         if debug:
-            self.eval_set.instances = self.eval_set.instances[:8]
+            self.eval_set.instances = self.eval_set.instances[:1]
 
         sys.path.remove(eval_root)
 

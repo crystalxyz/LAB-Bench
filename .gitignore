@@ -296,3 +296,8 @@ cython_debug/
 
 .env
 logs/
+
+
+# agent logs
+gemini_cli_artifacts/*
+codex_cli_artifacts/*
