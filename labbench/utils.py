@@ -46,6 +46,8 @@ class AgentInput(BaseModelWithID):
     id: uuid.UUID
     question: str
     choices: list[str]
+    index: int | None = Field(default=None, description="1-based index of this instance in the eval set")
+    expected_answer: str | None = Field(default=None, description="Expected answer letter for logging/debugging")
     figures: SkipValidation[list[Image.Image] | None] = Field(
         default=None, exclude=True
     )

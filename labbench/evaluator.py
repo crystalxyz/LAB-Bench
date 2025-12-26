@@ -5,7 +5,6 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from importlib import import_module, reload
-from itertools import starmap
 from logging import getLogger
 
 from tqdm import tqdm
@@ -54,7 +53,7 @@ class Evaluator:
             **eval_set_kwargs,
         )
         if debug:
-            self.eval_set.instances = self.eval_set.instances[:1]
+            self.eval_set.instances = self.eval_set.instances[:4]
 
         sys.path.remove(eval_root)
 
@@ -70,9 +69,13 @@ class Evaluator:
 
         pbar = tqdm(desc=self.eval.value, total=len(self.eval_set), ncols=0)
 
-        async def process_instance(subset: str, instance) -> dict:
+        async def process_instance(idx: int, subset: str, instance) -> dict:
+            input, target_output, unsure = instance.get_input_output()  # noqa: A001
+            input.index = idx + 1  # Set the 1-based index for folder naming
+            input.expected_answer = target_output  # Set expected answer for logging
+
+            # Acquire semaphore only around the agent execution to limit concurrency
             async with semaphore:
-                input, target_output, unsure = instance.get_input_output()  # noqa: A001
                 try:
                     if is_async:
                         agent_output = await agent_fn(input)
@@ -86,21 +89,24 @@ class Evaluator:
                     correct = agent_output == target_output
                     sure = agent_output != unsure
 
-                result = {
-                    "subset": subset,
-                    "instance": instance,
-                    "input": input,
-                    "target_choice": target_output,
-                    "unsure_choice": unsure,
-                    "agent_output": agent_output,
-                    "correct": correct,
-                    "sure": sure,
-                }
+            result = {
+                "subset": subset,
+                "instance": instance,
+                "input": input,
+                "target_choice": target_output,
+                "unsure_choice": unsure,
+                "agent_output": agent_output,
+                "correct": correct,
+                "sure": sure,
+            }
 
-                pbar.update(1)
-                return result
+            pbar.update(1)
+            return result
 
-        results = await asyncio.gather(*list(starmap(process_instance, self.eval_set)))
+        results = await asyncio.gather(*[
+            process_instance(idx, subset, instance)
+            for idx, (subset, instance) in enumerate(self.eval_set)
+        ])
 
         subsets = defaultdict(list)
         for r in results:

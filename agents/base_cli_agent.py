@@ -27,7 +27,7 @@ MCQ_INSTRUCT_TEMPLATE = """You are solving a multiple-choice question in biology
 
 Instruction:
 - Please answer by responding with the letter of the correct answer.
-- Wrap your answer with the following tags: [ANSWER]<letter>[/ANSWER]
+- Wrap your answer with the following tags: [ANSWER]X[/ANSWER] where X is the letter.
 - Write your answer to `{answer_file}`.
 - {cot}
 
@@ -47,7 +47,7 @@ class BaseCliAgent(ABC):
 
     def __init__(self, model_name: str, use_cot: bool = True):
         self._model_name = model_name
-        self.cot_prompt = "\n" + COT_PROMPT if use_cot else ""
+        self.cot_prompt = COT_PROMPT if use_cot else ""
         self.task_buffer: list[dict] = []
 
     @property
@@ -57,7 +57,7 @@ class BaseCliAgent(ABC):
         pass
 
     @abstractmethod
-    async def _run_cli(self, cmd: list[str], cwd: Path) -> str:
+    async def _run_cli(self, cmd: list[str], cwd: Path, task_info: dict | None = None) -> str:
         """
         Execute the CLI command in the workspace directory.
 
@@ -181,19 +181,35 @@ class BaseCliAgent(ABC):
         try:
             # Create a workspace directory for this run
             workspace_dir = Path.cwd() / self.workspace_prefix
-            run_dir = workspace_dir / f"run_{uuid.uuid4().hex}"
+            # Use index if available (0-padded), otherwise fall back to UUID
+            if input.index is not None:
+                run_dir = workspace_dir / f"run_{input.index:04d}"
+            else:
+                run_dir = workspace_dir / f"run_{input.id}"
+
+            answer_file = run_dir / "answer.txt"
+
+            # Skip if run_dir already exists (task was already attempted)
+            if run_dir.exists():
+                existing_answer = self._parse_answer_file(answer_file)
+                if existing_answer:
+                    print(f"[SKIP] {run_dir.name} already completed, answer: {existing_answer}")
+                    return existing_answer
+                else:
+                    print(f"[SKIP] {run_dir.name} already attempted (no answer)")
+                    raise UnanswerableError(f"Task already attempted but no answer found in {run_dir.name}")
+
             run_dir.mkdir(parents=True, exist_ok=True)
 
             # Save figure to workspace
             figure_path_for_prompt, figure_paths = self._save_figure_to_workspace(input, run_dir)
 
             # Build the prompt
-            answer_file = run_dir / "answer.txt"
             text_prompt = self._build_prompt(input, figure_path_for_prompt)
 
             # Track task in buffer
             task_buffer_entry = {
-                "id": input.id,
+                "id": str(input.id),
                 "text_prompt": text_prompt,
                 "workspace": str(run_dir),
                 "raw_output": None,
@@ -204,7 +220,16 @@ class BaseCliAgent(ABC):
 
             # Build and run CLI command
             cmd = self._build_cli_command(text_prompt, figure_paths)
-            raw_output = await self._run_cli(cmd, cwd=run_dir)
+            # Pass task info for trajectory logging
+            task_info = {
+                "id": str(input.id),
+                "question": input.question,
+                "choices": input.choices,
+                "prompt": text_prompt,
+                "figure_path": figure_path_for_prompt,
+                "expected_answer": input.expected_answer,
+            }
+            raw_output = await self._run_cli(cmd, cwd=run_dir, task_info=task_info)
             task_buffer_entry["raw_output"] = raw_output
 
             # Parse answer

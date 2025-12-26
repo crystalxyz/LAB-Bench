@@ -1,3 +1,7 @@
+# Agent results
+gemini_cli_artifacts*
+codex_artifacts*
+
 # Swap
 [._]*.s[a-v][a-z]
 !*.svg  # comment out if you don't need vector files
