@@ -134,35 +134,29 @@ class BaseCliAgent(ABC):
 
     def _parse_answer_from_output(self, raw_output: str, answer_file: Path) -> str:
         """
-        Parse answer from answer.txt or fallback to parsing the raw output.
+        Parse answer strictly from answer.txt only.
 
         Args:
-            raw_output: stdout from CLI command
+            raw_output: stdout from CLI command (unused, kept for API compatibility)
             answer_file: Path to answer.txt
 
         Returns:
-            Parsed answer, or None if no valid answer found
+            Parsed answer letter
 
         Raises:
-            ValueError: If answer cannot be parsed in the expected format
+            ValueError: If answer cannot be parsed in the expected [ANSWER]X[/ANSWER] format
         """
-        # Try to read answer from file (Harbor-style)
+        _ = raw_output  # Strict mode: only parse from answer.txt, not stdout
+
+        # Parse answer from file only (strict mode to match calculate_accuracy.py)
         answer_from_file = self._parse_answer_file(answer_file)
 
-        # If answer.txt exists and has valid answer, use it
-        # Otherwise fall back to parsing from stdout
         if answer_from_file:
             return answer_from_file
 
-        # Fallback: parse [ANSWER]X[/ANSWER] from stdout
-        match = re.search(r"\[ANSWER\](.*?)\[/ANSWER\]", raw_output, flags=re.S | re.I)
-        if match:
-            return match.group(1).strip()
-
-        # No fallback to loose regex - if the answer is not in the proper format, return None
-        # This prevents false positives from random letters in the output
+        # Strict: no fallback to stdout parsing
         raise ValueError(
-            "Could not parse answer: neither answer.txt nor [ANSWER]X[/ANSWER] format found in output"
+            "Could not parse answer: answer.txt missing or not in [ANSWER]X[/ANSWER] format"
         )
 
     async def run_task(self, input: AgentInput) -> str:
@@ -228,6 +222,7 @@ class BaseCliAgent(ABC):
                 "prompt": text_prompt,
                 "figure_path": figure_path_for_prompt,
                 "expected_answer": input.expected_answer,
+                "unsure_answer": input.unsure_answer,
             }
             raw_output = await self._run_cli(cmd, cwd=run_dir, task_info=task_info)
             task_buffer_entry["raw_output"] = raw_output

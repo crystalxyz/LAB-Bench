@@ -8,7 +8,6 @@ The agents in this directory share a common architecture:
 - **Workspace-based execution**: Each task runs in an isolated workspace directory
 - **Harbor-style answer format**: Agents write answers to `answer.txt` in `[ANSWER]X[/ANSWER]` format
 - **Figure handling**: Images are saved to the workspace and referenced by path
-- **CLI-based**: Each agent wraps a command-line tool rather than using SDKs directly
 
 ## Architecture
 
@@ -24,44 +23,13 @@ All agents inherit from `BaseCliAgent`, which provides:
 - Answer parsing from `answer.txt`
 - Strict format validation (`[ANSWER]X[/ANSWER]`)
 - Error handling and `UnanswerableError` classification
-
-**Template Methods (subclasses must implement):**
-- `workspace_prefix`: Directory name for agent artifacts
-- `_build_cli_command()`: Construct the CLI command
-- `_run_cli()`: Execute the command and handle errors
-
-**Workflow:**
-```python
-async def run_task(input: AgentInput) -> str:
-    1. Create workspace directory: {workspace_prefix}/run_{uuid}/
-    2. Save figure to workspace (preserving filename)
-    3. Build prompt with MCQ template
-    4. Execute CLI command in workspace
-    5. Parse answer from answer.txt
-    6. Return answer letter (A, B, C, etc.)
-```
-
-### Answer Format
-
-Agents must write answers to `answer.txt` in this exact format:
-```
-[ANSWER]A[/ANSWER]
-```
-
-The parser will:
-- ✅ First check `answer.txt` for the answer (Harbor-style)
-- ✅ Fallback to parsing stdout if answer.txt doesn't exist
-- ❌ Reject answers without proper `[ANSWER][/ANSWER]` tags
-
-### Prompt Template
-
-All agents use the same MCQ instruction template that can be found at `base_cli_agent.py`.
+- Define the prompt template
 
 ## Available Agents
 
 ### 1. Gemini CLI Agent
 
-**File:** [gemini_agent.py](gemini_agent.py:25-97)
+**File:** [gemini_agent.py](gemini_agent.py)
 
 Uses Google's `@google/gemini-cli` npm package.
 
@@ -71,50 +39,63 @@ npm install -g @google/gemini-cli
 export GEMINI_API_KEY=your_key  # or GOOGLE_API_KEY
 ```
 
-**How it works:**
-- **CLI command:** `gemini -y -m {model} {prompt}`
-- **Figure handling:** Gemini CLI automatically scans the workspace directory (cwd) for images; figures are referenced by path in the prompt
-- **Workspace:** `gemini_cli_artifacts/run_{uuid}/`
-- **Error handling:**
-  - Token limit errors → `UnanswerableError`
-  - API 400 errors → `UnanswerableError`
-  - Other errors → `RuntimeError`
-
-**Example command:**
+**Usage:**
 ```bash
 cd LAB-Bench
+
+# Full run, timeout 300s, all 181 tasks
 python -m agents.gemini_agent
+
+# Debug run, fail fast
+python -m agents.gemini_agent --debug --timeout 120
 ```
 
 ### 2. Codex CLI Agent
 
-**File:** [codex_agent.py](codex_agent.py:24-114)
+**File:** [codex_agent.py](codex_agent.py)
 
 Uses OpenAI's Codex CLI tool.
 
 **Setup:**
 ```bash
 # Install Codex CLI (installation method varies)
-export OPENAI_API_KEY=your_key  # or CODEX_API_KEY
+export OPENAI_API_KEY=your_key
 ```
 
-
-**How it works:**
-- **CLI command:** `codex exec -m {model} -s workspace-write --color never --skip-git-repo-check {prompt}`
-- **Figure handling:** Prompt-driven (figures saved to workspace, referenced by path in prompt)
-- **Workspace:** `codex_artifacts/run_{uuid}/`
-- **Sandbox:** `workspace-write` mode allows writing to workspace
-- **Debug logging:** Prints stdout and answer.txt content for inspection
-- **Error handling:**
-  - Context length errors → `UnanswerableError`
-  - API 400 errors → `UnanswerableError`
-  - Other errors → `RuntimeError`
-
-**Execution**
+**Usage:**
 ```bash
 cd LAB-Bench
+
+# Full run, timeout 300s, all 181 tasks
 python -m agents.codex_agent
+
+# Debug run, fail fast
+python -m agents.codex_agent --debug --timeout 120
 ```
+
+## CLI Options
+
+Both agents support the same CLI flags:
+
+| Flag        | Default | Description                      |
+| ----------- | ------- | -------------------------------- |
+| `--debug`   | `False` | Run in debug mode (only 8 tasks) |
+| `--timeout` | `300`   | Timeout in seconds for each task |
+
+## Accuracy Calculation
+
+After a run completes, `result.json` is automatically saved to the artifacts directory.
+
+You can also manually calculate accuracy for an existing artifacts directory:
+
+```bash
+python -m agents.calculate_accuracy codex_artifacts_20250103_143022/
+```
+
+This outputs a Harbor-compatible `result.json` with:
+- **accuracy**: correct / total
+- **precision**: correct / sure (excluding "Insufficient information" answers)
+- **coverage**: sure / total
 
 ## Error Handling
 
@@ -134,47 +115,24 @@ All agents distinguish between two types of errors:
 
 ## Workspace Organization
 
-Each agent run creates an isolated workspace:
+Each agent run creates a timestamped workspace with isolated task directories:
 
 ```
-{workspace_prefix}/
-  run_abc123/
+{agent}_artifacts_{YYYYMMDD_HHMMSS}/
+  run_0001/
     figure.png              # Original figure (filename preserved)
-    answer.txt              # Agent's answer (if written)
-    (other agent artifacts)
-  run_def456/
+    answer.txt              # Agent's answer
+    expected_answer.txt     # Correct answer (saved after task completes)
+    unsure_answer.txt       # "Insufficient info" option letter
+    prompt.txt              # Full prompt sent to agent
+    {agent}_trajectory.*    # Raw CLI output
+  run_0002/
     ...
+  result.json               # Auto-generated accuracy report
 ```
 
 **Workspace prefixes:**
-- `gemini_cli_artifacts` - Gemini CLI agent
-- `codex_artifacts` - Codex CLI agent
+- `gemini_artifacts_{timestamp}` - Gemini CLI agent
+- `codex_artifacts_{timestamp}` - Codex CLI agent
 
-**Cleanup:** Workspaces persist after evaluation for debugging. You can manually delete workspace directories if needed.
-
-
-
-## Harbor Integration
-
-These agents are designed to mimic Harbor's workflow, making them compatible with the Harbor framework:
-
-**Harbor Adapter Pattern:**
-1. Harbor builds Docker container with `/app/instruction.md` and figures
-2. Agent runs inside container, reads instruction, processes figures
-3. Agent writes answer to `/app/answer.txt` in `[ANSWER]X[/ANSWER]` format
-4. Verifier (`test.sh`) checks answer.txt against correct answer
-5. Harbor collects trajectory data via `populate_context_post_run()`
-
-**Standalone LAB-Bench Pattern (these agents):**
-1. Agent creates workspace directory with unique ID
-2. Saves figure to workspace (preserving filename)
-3. Builds prompt with figure path reference
-4. Runs CLI tool in workspace
-5. Parses answer from `answer.txt` (or stdout fallback)
-6. Returns answer for evaluation
-
-**Key Differences:**
-- Harbor uses `/app/` as workspace; standalone uses `{prefix}/run_{uuid}/`
-- Harbor passes instruction via file; standalone passes via CLI argument
-- Harbor trajectory collection is agent-specific; standalone logs to task_buffer
-- Both enforce same answer format: `[ANSWER]X[/ANSWER]`
+**Cleanup:** Workspaces persist after evaluation for debugging. Delete manually if needed.

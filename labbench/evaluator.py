@@ -69,10 +69,15 @@ class Evaluator:
 
         pbar = tqdm(desc=self.eval.value, total=len(self.eval_set), ncols=0)
 
+        # Running counters for real-time logging
+        counters = {"completed": 0, "correct": 0, "sure": 0}
+        counters_lock = asyncio.Lock()
+
         async def process_instance(idx: int, subset: str, instance) -> dict:
             input, target_output, unsure = instance.get_input_output()  # noqa: A001
             input.index = idx + 1  # Set the 1-based index for folder naming
             input.expected_answer = target_output  # Set expected answer for logging
+            input.unsure_answer = unsure  # Set unsure choice letter for metrics
 
             # Acquire semaphore only around the agent execution to limit concurrency
             async with semaphore:
@@ -99,6 +104,32 @@ class Evaluator:
                 "correct": correct,
                 "sure": sure,
             }
+
+            # Update counters and log result
+            async with counters_lock:
+                counters["completed"] += 1
+                if correct:
+                    counters["correct"] += 1
+                if sure:
+                    counters["sure"] += 1
+
+                # Determine status string
+                if agent_output is None:
+                    status = "ERROR"
+                elif not sure:
+                    status = "UNSURE"
+                elif correct:
+                    status = "CORRECT"
+                else:
+                    status = "WRONG"
+
+                # Log with running totals
+                n_total = len(self.eval_set)
+                pbar.write(
+                    f"[{counters['completed']:03d}/{n_total}] {instance.id}: "
+                    f"Answer={agent_output}, Expected={target_output} -> {status} "
+                    f"({counters['correct']} correct / {counters['sure']} sure)"
+                )
 
             pbar.update(1)
             return result

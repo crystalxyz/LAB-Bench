@@ -12,11 +12,15 @@ Notes:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 from .base_cli_agent import BaseCliAgent
+from .calculate_accuracy import calculate_accuracy, build_harbor_result, print_summary
 from labbench import Eval, Evaluator
 from labbench.evaluator import UnanswerableError
 
@@ -27,14 +31,17 @@ class CodexZeroShotAgent(BaseCliAgent):
     Mimics Harbor adapter behavior by having the agent write to answer.txt.
     """
 
-    def __init__(self, model_name: str = "gpt-4.1", use_cot: bool = True):
+    def __init__(self, model_name: str = "gpt-4.1", use_cot: bool = True, timeout: float = 300.0):
         if "OPENAI_API_KEY" not in os.environ:
             raise EnvironmentError("Set OPENAI_API_KEY for the CLI.")
         super().__init__(model_name, use_cot)
+        # Set timestamp once at agent creation for consistent directory naming
+        self._run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._timeout = timeout
 
     @property
     def workspace_prefix(self) -> str:
-        return "codex_artifacts"
+        return f"codex_artifacts_{self._run_timestamp}"
 
     def _build_cli_command(self, text_prompt: str, figure_paths: list[Path]) -> list[str]:
         """Build codex CLI command with the text prompt.
@@ -70,12 +77,7 @@ class CodexZeroShotAgent(BaseCliAgent):
         import shlex
         import time
 
-        start_time = time.time()
         trajectory_file = cwd / "codex_trajectory.json"
-
-        # Save expected answer before running (in case of timeout)
-        if task_info and "expected_answer" in task_info:
-            (cwd / "expected_answer.txt").write_text(task_info["expected_answer"], encoding="utf-8")
 
         # Build shell command with tee to stream output to file in real-time
         # This ensures partial trajectory is saved even on timeout (like Harbor does)
@@ -91,13 +93,9 @@ class CodexZeroShotAgent(BaseCliAgent):
 
         timed_out = False
         try:
-            await asyncio.wait_for(proc.communicate(), timeout=300.0)  # 5 minutes
-            # elapsed = time.time() - start_time
-            # print(f"[FINISH] Codex CLI completed after {elapsed:.1f}s")
+            await asyncio.wait_for(proc.communicate(), timeout=self._timeout)
         except asyncio.TimeoutError:
             timed_out = True
-            # elapsed = time.time() - start_time
-            # print(f"[TIMEOUT] Codex CLI timed out after {elapsed:.1f}s")
             # Kill the process - trajectory file already has partial output from tee
             try:
                 proc.terminate()
@@ -121,6 +119,16 @@ class CodexZeroShotAgent(BaseCliAgent):
         if trajectory_file.exists():
             stdout_text = trajectory_file.read_text(encoding="utf-8").strip()
 
+        # Save task info AFTER agent finishes
+        # (prevents agent from cheating by reading expected_answer during execution)
+        if task_info:
+            if "prompt" in task_info:
+                (cwd / "prompt.txt").write_text(task_info["prompt"], encoding="utf-8")
+            if "expected_answer" in task_info:
+                (cwd / "expected_answer.txt").write_text(task_info["expected_answer"], encoding="utf-8")
+            if "unsure_answer" in task_info:
+                (cwd / "unsure_answer.txt").write_text(task_info["unsure_answer"], encoding="utf-8")
+
         # Check for errors and raise exceptions
         if timed_out:
             raise UnanswerableError("Codex CLI command timed out!")
@@ -140,13 +148,36 @@ class CodexZeroShotAgent(BaseCliAgent):
         return stdout_text
 
 
-async def main() -> None:
-    """Example: run a small FigQA slice against the codex CLI."""
-    agent = CodexZeroShotAgent(model_name="gpt-5-codex", use_cot=True)
-    evaluator = Evaluator(Eval.FigQA, debug=False)  # debug=True -> first 8 items
+async def main(debug: bool = False, timeout: float = 300.0) -> None:
+    """Run FigQA evaluation against the codex CLI."""
+    agent = CodexZeroShotAgent(model_name="gpt-5-codex", use_cot=True, timeout=timeout)
+    evaluator = Evaluator(Eval.FigQA, debug=debug)
     results = await evaluator.score_agent(agent.run_task, n_threads=4)
     print(results["metrics_all"])
 
+    # Auto-save result.json to artifacts directory
+    artifacts_dir = Path.cwd() / agent.workspace_prefix
+    if artifacts_dir.exists():
+        accuracy_results = calculate_accuracy(artifacts_dir)
+        print_summary(accuracy_results, artifacts_dir)
+        harbor_result = build_harbor_result(accuracy_results, eval_name="labbench")
+        result_path = artifacts_dir / "result.json"
+        result_path.write_text(json.dumps(harbor_result, indent=4), encoding="utf-8")
+        print(f"Result saved to {result_path}")
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="Run LAB-Bench FigQA evaluation with Codex CLI")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Run in debug mode (only 4 tasks)"
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=300.0,
+        help="Timeout in seconds for each task (default: 300)"
+    )
+    args = parser.parse_args()
+    asyncio.run(main(debug=args.debug, timeout=args.timeout))
